@@ -27,9 +27,12 @@ go.work.sum
 # env file
 .env
 
+# Application specific
 news_data.json
 
-
+# Editor/IDE
 .idea/
 .vscode/
+
+# Temp directories
 tmp/*
