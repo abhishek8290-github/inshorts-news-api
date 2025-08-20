@@ -29,7 +29,7 @@ func SetupRoutes(r *gin.Engine) {
 		newsRouterV1.GET("/search", handlers.SmartNewsRouter)
 		newsRouterV1.GET("/nearby", handlers.GetNewsNearby)
 
-		newsRouterV1.GET("/embed", handlers.GetEmbeddingsfromText)
+		// newsRouterV1.GET("/embed", handlers.GetEmbeddingsHandler)
 	}
 
 	// Health check
