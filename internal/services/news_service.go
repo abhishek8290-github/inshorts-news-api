@@ -1,19 +1,106 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"news-api/internal/database"
 	"news-api/internal/dto"
 	"news-api/internal/models"
+	"strings" // Added for string manipulation
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+func GetEmbeddingsfromText(text string) ([]float64, error) {
+	embedURL := "http://localhost:8001/embed"
+	requestBody, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	resp, err := http.Post(embedURL, "application/json", bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to call embedding service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("embedding service failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Embedding []float64 `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to parse embedding response: %w", err)
+	}
+
+	return result.Embedding, nil
+}
+
+func GetLLMSummaryFromURL(articleURL string) (string, error) {
+	// If the URL contains "youtube", return an empty string
+	if strings.Contains(articleURL, "youtube.com") || strings.Contains(articleURL, "youtu.be") {
+		return "", nil
+	}
+
+	summarizeURL := "http://localhost:8001/summarize"
+	requestBody, err := json.Marshal(map[string]string{"url": articleURL})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request body for summary: %w", err)
+	}
+
+	resp, err := http.Post(summarizeURL, "application/json", bytes.NewBuffer(requestBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to call summarization service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("summarization service failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Summary string `json:"summary"`
+		Title   string `json:"title"`
+		Status  string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("failed to parse summarization response: %w", err)
+	}
+
+	if result.Status != "success" {
+		return "", fmt.Errorf("summarization service returned non-success status: %s", result.Status)
+	}
+
+	return result.Summary, nil
+}
+
 func AddNewsEntry(req *dto.AddNewsRequest) (*models.Article, error) {
 	collection := database.GetCollection("news_articles") // Assuming "news_articles" is your collection name
+
+	// Calculate vector embedding
+	articleText := req.Title + " " + req.Description // Combine title and description for embedding
+	embedding, err := GetEmbeddingsfromText(articleText)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get embedding: %w", err)
+	}
+
+	// Calculate LLM Summary
+	llmSummary, err := GetLLMSummaryFromURL(req.URL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get LLM summary: %w", err)
+	}
 
 	// Convert DTO to Model if necessary, or directly use req if it's already models.Article
 	article := models.Article{
@@ -25,21 +112,18 @@ func AddNewsEntry(req *dto.AddNewsRequest) (*models.Article, error) {
 		SourceName:      req.SourceName,
 		Category:        req.Category,
 		RelevanceScore:  req.RelevanceScore,
-		Location: struct {
-			Type        string    `bson:"type" json:"type"`
-			Coordinates []float64 `bson:"coordinates" json:"coordinates"`
-		}{
+		Location: models.Location{
 			Type:        "Point",
 			Coordinates: []float64{req.Longitude, req.Latitude}, // GeoJSON expects [lon, lat]
 		},
-		LLMSummary:      req.LLMSummary,
-		VectorEmbedding: req.VectorEmbedding,
+		LLMSummary:      llmSummary, // Use the calculated LLM summary
+		VectorEmbedding: embedding,  // Use the calculated embedding
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := collection.InsertOne(ctx, article)
+	_, err = collection.InsertOne(ctx, article)
 	if err != nil {
 		fmt.Printf("Failed to insert article: %v\n", err)
 		return nil, err
@@ -56,6 +140,19 @@ func AddNewsEntryList(req []*dto.AddNewsRequest) ([]models.Article, error) {
 
 	_articlesAdded := []models.Article{}
 	for _, value := range req {
+		// Calculate vector embedding for each article
+		articleText := value.Title + " " + value.Description // Combine title and description for embedding
+		embedding, err := GetEmbeddingsfromText(articleText)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get embedding for article '%s': %w", value.Title, err)
+		}
+
+		// Calculate LLM Summary for each article
+		llmSummary, err := GetLLMSummaryFromURL(value.URL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get LLM summary for article '%s': %w", value.Title, err)
+		}
+
 		article := models.Article{
 			ID:              primitive.NewObjectID(), // Generate a new ObjectID
 			Title:           value.Title,
@@ -65,15 +162,12 @@ func AddNewsEntryList(req []*dto.AddNewsRequest) ([]models.Article, error) {
 			SourceName:      value.SourceName,
 			Category:        value.Category,
 			RelevanceScore:  value.RelevanceScore,
-			Location: struct {
-				Type        string    `bson:"type" json:"type"`
-				Coordinates []float64 `bson:"coordinates" json:"coordinates"`
-			}{
+			Location: models.Location{
 				Type:        "Point",
 				Coordinates: []float64{value.Longitude, value.Latitude}, // GeoJSON expects [lon, lat]
 			},
-			LLMSummary:      value.LLMSummary,
-			VectorEmbedding: value.VectorEmbedding,
+			LLMSummary:      llmSummary, // Use the calculated LLM summary
+			VectorEmbedding: embedding,  // Use the calculated embedding
 		}
 
 		_articlesAdded = append(_articlesAdded, article)
@@ -95,7 +189,7 @@ func AddNewsEntryList(req []*dto.AddNewsRequest) ([]models.Article, error) {
 	return _articlesAdded, nil
 }
 
-func FindNews(filter primitive.M, page, pageSize int64) ([]models.Article, error) {
+func FindNews(filter primitive.M, page, pageSize int64) ([]dto.NewsArticleResponse, error) {
 	collection := database.GetCollection("news_articles") // Assuming "news_articles" is your collection name
 	ctx, cancel := context.WithTimeout(context.Background(), 60*10*time.Second)
 	defer cancel()
@@ -117,11 +211,81 @@ func FindNews(filter primitive.M, page, pageSize int64) ([]models.Article, error
 		return nil, err
 	}
 
-	return articles, nil
+	var responseArticles []dto.NewsArticleResponse
+	for _, article := range articles {
+		responseArticles = append(responseArticles, dto.NewNewsArticleResponse(article))
+	}
+
+	return responseArticles, nil
 }
 
-// parseTime parses a string into a time.Time object.
-// It attempts to parse common date formats.
+func FindNewsByVectorEmbedding(embedding []float64, page, pageSize int64) ([]dto.NewsArticleResponse, error) {
+	collection := database.GetCollection("news_articles")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pipeline := mongo.Pipeline{
+		{{
+			"$vectorSearch", bson.D{
+				{"queryVector", embedding},
+				{"path", "vector_embedding"},
+				{"numCandidates", 100},
+				{"limit", pageSize},
+				{"index", "vector_index"},
+			},
+		}},
+		{{
+			"$addFields", bson.D{
+				{"score", bson.D{{"$meta", "vectorSearchScore"}}},
+			},
+		}},
+		{{
+			"$skip", (page - 1) * pageSize,
+		}},
+		{{
+			"$limit", pageSize,
+		}},
+		// Remove the restrictive $project stage or include ALL fields
+		{{
+			"$project", bson.D{
+				{"_id", 1},
+				{"title", 1},
+				{"description", 1},
+				{"url", 1},
+				{"publication_date", 1},
+				{"source_name", 1},
+				{"category", 1},
+				{"relevance_score", 1},
+				{"location", 1},
+				{"llm_summary", 1},
+				{"vector_embedding", 1}, // Include if needed
+				{"score", 1},
+			},
+		}},
+	}
+
+	cursor, err := collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		fmt.Printf("Failed to perform vector search: %v\n", err)
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var articles []models.Article
+	if err = cursor.All(ctx, &articles); err != nil {
+		fmt.Printf("Failed to decode articles from vector search: %v\n", err)
+		return nil, err
+	}
+
+	var responseArticles []dto.NewsArticleResponse
+	for _, article := range articles {
+		responseArticles = append(responseArticles, dto.NewNewsArticleResponse(article))
+	}
+	fmt.Println(responseArticles, "responseArticles")
+
+	return responseArticles, nil
+}
+
 func parseTime(dateStr string) time.Time {
 	layouts := []string{
 		time.RFC3339,

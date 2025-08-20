@@ -1,14 +1,10 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"news-api/internal/dto"
-	"news-api/internal/models"
 	"news-api/internal/services"
 	"news-api/internal/utils"
 	"os"
@@ -20,51 +16,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"google.golang.org/api/option"
 )
-
-func GetEmbeddingsfromText(c *gin.Context) {
-	// Parse input JSON { "text": "..." }
-	var req struct {
-		Text string `json:"text"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	// Call local FastAPI service
-	embedURL := "http://localhost:8001/embed"
-	// embedURL := "http://embed-service:8001/embed"
-
-	payload, _ := json.Marshal(req)
-
-	resp, err := http.Post(embedURL, "application/json", bytes.NewBuffer(payload))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to call embedding service"})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		c.JSON(resp.StatusCode, gin.H{"error": "Embedding service failed", "details": string(body)})
-		return
-	}
-
-	// Parse embedding result { "embedding": [...] }
-	var result struct {
-		Embedding []float64 `json:"embedding"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse embedding response"})
-		return
-	}
-
-	// Return embedding to client
-	c.JSON(http.StatusOK, gin.H{
-		"embedding":  result.Embedding,
-		"dimensions": len(result.Embedding),
-	})
-}
 
 func CreateNewsEntry(c *gin.Context) {
 	// 1. Parse and validate request
@@ -295,12 +246,16 @@ func SmartNewsRouter(c *gin.Context) {
 	}
 	defer client.Close()
 
+	emeddings, err := services.GetEmbeddingsfromText(userQuery)
+	fmt.Println("Hello there ")
+	fmt.Println(emeddings)
+
 	model := client.GenerativeModel("gemini-2.5-flash")
 
 	prompt := fmt.Sprintf(`
 You are a query router for a news API.
 Extract:
-- intent: one of ["category","source","score","search","nearby"]
+- intent: one of ["category","source","score","search","nearby","vector_search"]
 - entities: list of objects, each with:
    { "type": "category|source|keyword|location|score", "value": "..." }
 
@@ -353,7 +308,8 @@ User query: "%s"`, userQuery)
 	}
 
 	var filter primitive.M
-	var articles []models.Article
+	var articles []dto.NewsArticleResponse
+	// var err error // Declare err here to avoid redeclaration in switch cases
 
 	switch geminiResponse.Intent {
 	case "category":
@@ -363,6 +319,7 @@ User query: "%s"`, userQuery)
 				break
 			}
 		}
+		articles, err = services.FindNews(filter, page, pageSize)
 
 	case "source":
 		for _, e := range geminiResponse.Entities {
@@ -371,6 +328,7 @@ User query: "%s"`, userQuery)
 				break
 			}
 		}
+		articles, err = services.FindNews(filter, page, pageSize)
 
 	case "score":
 		for _, e := range geminiResponse.Entities {
@@ -384,6 +342,7 @@ User query: "%s"`, userQuery)
 				break
 			}
 		}
+		articles, err = services.FindNews(filter, page, pageSize)
 
 	case "search":
 		var orClauses []primitive.M
@@ -417,6 +376,7 @@ User query: "%s"`, userQuery)
 				},
 			}
 		}
+		articles, err = services.FindNews(filter, page, pageSize)
 
 	case "nearby":
 		latStr := c.Query("lat")
@@ -454,16 +414,22 @@ User query: "%s"`, userQuery)
 				},
 			},
 		}
+		articles, err = services.FindNews(filter, page, pageSize)
 
 	default:
 		utils.ErrorResponse(c, 400, "Unknown intent from Gemini: "+geminiResponse.Intent)
 		return
 	}
 
-	articles, err = services.FindNews(filter, page, pageSize)
 	if err != nil {
 		utils.ErrorResponse(c, 500, "Failed to retrieve news: "+err.Error())
 		return
+	}
+
+	vectorArticles, err := SearchNewsByVectorEmbedding(c, userQuery)
+	fmt.Println(vectorArticles, "Found Vectors ")
+	if err == nil {
+		articles = deduplicateArticles(articles, vectorArticles)
 	}
 
 	utils.SuccessResponse(c, gin.H{
@@ -474,4 +440,62 @@ User query: "%s"`, userQuery)
 			"original_query": userQuery,
 		},
 	})
+}
+
+// Add this helper function
+func deduplicateArticles(articles1, articles2 []dto.NewsArticleResponse) []dto.NewsArticleResponse {
+	seen := make(map[string]bool)
+	var result []dto.NewsArticleResponse
+
+	// Add first set
+	for _, article := range articles1 {
+		idStr := article.ID.Hex()
+		if !seen[idStr] {
+			seen[idStr] = true
+			result = append(result, article)
+		}
+	}
+
+	// Add second set (only if not already seen)
+	for _, article := range articles2 {
+		idStr := article.ID.Hex()
+		if !seen[idStr] {
+			seen[idStr] = true
+			result = append(result, article)
+		}
+	}
+
+	return result
+}
+
+func SearchNewsByVectorEmbedding(c *gin.Context, userQuery string) ([]dto.NewsArticleResponse, error) {
+	embedding, err := services.GetEmbeddingsfromText(userQuery)
+	if err != nil {
+		utils.ErrorResponse(c, 500, "Failed to get embedding for search query: "+err.Error())
+		return nil, fmt.Errorf("failed to get embedding: %w", err)
+	}
+
+	articles, err := services.FindNewsByVectorEmbedding(embedding, 1, 10)
+	if err != nil {
+		utils.ErrorResponse(c, 500, "Failed to retrieve news by vector embedding: "+err.Error())
+		return nil, fmt.Errorf("failed to find news by vector embedding: %w", err)
+	}
+
+	return articles, nil
+}
+
+func GetEmbeddingsHandler(c *gin.Context) {
+	text := c.Query("text")
+	if text == "" {
+		utils.ErrorResponse(c, 400, "Text parameter is missing")
+		return
+	}
+
+	embedding, err := services.GetEmbeddingsfromText(text)
+	if err != nil {
+		utils.ErrorResponse(c, 500, "Failed to get embedding: "+err.Error())
+		return
+	}
+
+	utils.SuccessResponse(c, embedding)
 }

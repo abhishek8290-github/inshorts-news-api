@@ -17,12 +17,15 @@ type Article struct {
 	RelevanceScore  float64            `bson:"relevance_score" json:"relevance_score"`
 
 	// Geospatial location in GeoJSON format
-	Location struct {
-		Type        string    `bson:"type" json:"type"`               // always "Point"
-		Coordinates []float64 `bson:"coordinates" json:"coordinates"` // [lon, lat]
-	} `bson:"location" json:"location"`
+	Location Location `bson:"location" json:"location"`
 
 	// Optional enrichment fields
-	LLMSummary      string    `bson:"llm_summary,omitempty" json:"llm_summary,omitempty"`
+	LLMSummary      string    `bson:"llm_summary" json:"llm_summary"`
 	VectorEmbedding []float64 `bson:"vector_embedding,omitempty" json:"vector_embedding,omitempty"`
+}
+
+// Location represents the GeoJSON location structure
+type Location struct {
+	Type        string    `bson:"type" json:"type"`               // always "Point"
+	Coordinates []float64 `bson:"coordinates" json:"coordinates"` // [lon, lat]
 }
