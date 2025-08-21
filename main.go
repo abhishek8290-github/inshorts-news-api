@@ -25,7 +25,7 @@ func main() {
 	// Initialize and start cron scheduler
 	c := cron.New()
 	// Schedule the global trending calculations to run every hour
-	c.AddFunc("@every 1m", func() {
+	c.AddFunc("@hourly", func() {
 		log.Println("Running scheduled global trending calculations...")
 		services.ScheduleGlobalTrendingCalculations()
 	})
