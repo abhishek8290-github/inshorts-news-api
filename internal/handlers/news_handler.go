@@ -17,6 +17,24 @@ import (
 	"google.golang.org/api/option"
 )
 
+func GetCategories(c *gin.Context) {
+	categories, err := services.GetAllCategories()
+	if err != nil {
+		utils.ErrorResponse(c, 500, "Failed to retrieve categories: "+err.Error())
+		return
+	}
+	utils.SuccessResponse(c, categories)
+}
+
+func GetSourceNames(c *gin.Context) {
+	sourceNames, err := services.GetAllSourceNames()
+	if err != nil {
+		utils.ErrorResponse(c, 500, "Failed to retrieve source names: "+err.Error())
+		return
+	}
+	utils.SuccessResponse(c, sourceNames)
+}
+
 func CreateNewsEntry(c *gin.Context) {
 	// 1. Parse and validate request
 	var req dto.AddNewsRequest
@@ -257,10 +275,76 @@ You are a query router for a news API.
 Extract:
 - intent: one of ["category","source","score","search","nearby","vector_search"]
 - entities: list of objects, each with:
-   { "type": "category|source|keyword|location|score", "value": "..." }
+   { "type": "category|source|keyword|score", "value": "..." }
 
 Important:
 - If the user mentions multiple keywords joined with "and" or "or", split them into separate entities.
+- Remember the User can do the spelling mistakes these are the source _name [
+  'Freepressjournal',      'X',                  'Tribuneindia',
+  'News18',                'Hindustan Times',    'Sports Tiger',
+  'Moneycontrol',          'PTI',                'Zhejiang University',
+  'dw.com',                'Cricket.com',        'ANI',
+  'ANI News',              'Hindustantimes',     'The Print',
+  'Chandigarhcitynews',    'Free Press Journal', 'Ascendants',
+  'ET Now',                'The Indian Express', 'LatestLY',
+  'Youtube',               'Times Now',          'Instagram',
+  'Sports Info',           'RT International',   'The Chenab Times',
+  'Reuters',               'NDTV',               'ESPNcricinfo',
+  'Cricfit',               'NewsBytes',          'Logistics Outlook',
+  'The South First',       'Latestly',           'MoneyControl ',
+  'Briefly',               'RT',                 'ABP News',
+  'X (Formerly Twitter)',  'YouTube ',           'ABP Live',
+  'News Karnataka',        'Aalto',              'Sportskeeda',
+  'Financial Express',     'Science',            'Anadolu Ajansi',
+  'The Tribune',           'NewsX World',        '30 Stades',
+  'Investment Guru India', 'CricTracker',        'Republic World',
+  'Trak.in',               'NDTV Profit',        'DW',
+  'Curlytales',            'Mid-day',            'NASA',
+  'ABP',                   'Wisden',             'E4M',
+  'UNICEF',                'Factly',             'Pokerbaazi',
+  'BreezyScroll',          'Hub News',           'Aninews',
+  'Abplive',               'Defence XP',         'ESPN',
+  'Northeast Now',         'The CSR Journal',    'Medical Dialogues',
+  'The Siasat Daily',      'Bollywood Hungama',  'ABP ',
+  'It Voice',              'Linkedin',           'Indian Express',
+  'JACC',                  'Republic TV',        'Theprint',
+  'Boom Live',             'The Core',           'TASS',
+  'PTI ',                  'GWR',                'Utah.edu'
+]
+
+and these are our categories [
+  'General',
+  'politics',
+  'national',
+  'world',
+  'sports',
+  'entertainment',
+  'science',
+  'technology',
+  'IPL_2025',
+  'IPL',
+  'business',
+  'hatke',
+  'city',
+  'crime',
+  'startup',
+  'miscellaneous',
+  'cricket',
+  'Health___Fitness',
+  'fashion',
+  'Israel-Hamas_War',
+  'facts',
+  'FINANCE',
+  'education',
+  'travel',
+  'Russia-Ukraine_Conflict',
+  'EXPLAINERS',
+  'bollywood',
+  'automobile',
+  'DEFENCE',
+  'Feel_Good_Stories'
+]
+
 - Example: "Bangladesh and India from News18" → 
   [
     { "type": "keyword", "value": "Bangladesh" },

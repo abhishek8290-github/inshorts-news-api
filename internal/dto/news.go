@@ -33,16 +33,14 @@ type NewsResponse struct {
 // type AddNewsRequest = models.Article
 
 type AddNewsRequest struct {
-	ID              string    `json:"id,omitempty"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	URL             string    `json:"url"`
-	PublicationDate string    `json:"publication_date"`
-	SourceName      string    `json:"source_name"`
-	Category        []string  `json:"category"`
-	RelevanceScore  float64   `json:"relevance_score"`
-	Latitude        float64   `json:"latitude"`
-	Longitude       float64   `json:"longitude"`
-	VectorEmbedding []float64 `json:"vector_embedding,omitempty"`
-	LLMSummary      string    `json:"llm_summary,omitempty"`
+	Title           string   `json:"title" binding:"required"`
+	Description     string   `json:"description" binding:"required"`
+	URL             string   `json:"url" binding:"required"`
+	PublicationDate string   `json:"publication_date" binding:"required"`
+	SourceName      string   `json:"source_name" binding:"required"`
+	Category        []string `json:"category" binding:"required"`
+	RelevanceScore  float64  `json:"relevance_score" binding:"required"`
+	Latitude        float64  `json:"latitude" binding:"required"`
+	Longitude       float64  `json:"longitude" binding:"required"`
+	LLMSummary      string   `json:"llm_summary,omitempty"`
 }

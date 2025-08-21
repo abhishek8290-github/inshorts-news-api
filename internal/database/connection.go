@@ -42,3 +42,7 @@ func Connect() {
 func GetCollection(collectionName string) *mongo.Collection {
 	return Database.Collection(collectionName)
 }
+
+func GetDB() *mongo.Database {
+	return Database
+}

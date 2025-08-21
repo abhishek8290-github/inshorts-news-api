@@ -87,10 +87,23 @@ func GetLLMSummaryFromURL(articleURL string) (string, error) {
 }
 
 func AddNewsEntry(req *dto.AddNewsRequest) (*models.Article, error) {
-	collection := database.GetCollection("news_articles") // Assuming "news_articles" is your collection name
+	collection := database.GetCollection("news_articles")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Check for duplicate URL
+	filter := bson.M{"url": req.URL}
+	var existingArticle models.Article
+	err := collection.FindOne(ctx, filter).Decode(&existingArticle)
+	if err == nil {
+		return nil, fmt.Errorf("article with URL '%s' already exists", req.URL)
+	}
+	if err != mongo.ErrNoDocuments {
+		return nil, fmt.Errorf("failed to check for existing article: %w", err)
+	}
 
 	// Calculate vector embedding
-	articleText := req.Title + " " + req.Description // Combine title and description for embedding
+	articleText := req.Title + " " + req.Description
 	embedding, err := GetEmbeddingsfromText(articleText)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get embedding: %w", err)
@@ -102,7 +115,6 @@ func AddNewsEntry(req *dto.AddNewsRequest) (*models.Article, error) {
 		return nil, fmt.Errorf("failed to get LLM summary: %w", err)
 	}
 
-	// Convert DTO to Model if necessary, or directly use req if it's already models.Article
 	article := models.Article{
 		ID:              primitive.NewObjectID(),
 		Title:           req.Title,
@@ -114,14 +126,11 @@ func AddNewsEntry(req *dto.AddNewsRequest) (*models.Article, error) {
 		RelevanceScore:  req.RelevanceScore,
 		Location: models.Location{
 			Type:        "Point",
-			Coordinates: []float64{req.Longitude, req.Latitude}, // GeoJSON expects [lon, lat]
+			Coordinates: []float64{req.Longitude, req.Latitude},
 		},
-		LLMSummary:      llmSummary, // Use the calculated LLM summary
-		VectorEmbedding: embedding,  // Use the calculated embedding
+		LLMSummary:      llmSummary,
+		VectorEmbedding: embedding,
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	_, err = collection.InsertOne(ctx, article)
 	if err != nil {
@@ -134,14 +143,28 @@ func AddNewsEntry(req *dto.AddNewsRequest) (*models.Article, error) {
 }
 
 func AddNewsEntryList(req []*dto.AddNewsRequest) ([]models.Article, error) {
-	collection := database.GetCollection("news_articles") // Assuming "news_articles" is your collection name
+	collection := database.GetCollection("news_articles")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*10*time.Second)
 	defer cancel()
 
-	_articlesAdded := []models.Article{}
+	var articlesToInsert []interface{}
+	var articlesAdded []models.Article
+
 	for _, value := range req {
+		// Check for duplicate URL
+		filter := bson.M{"url": value.URL}
+		var existingArticle models.Article
+		err := collection.FindOne(ctx, filter).Decode(&existingArticle)
+		if err == nil {
+			fmt.Printf("Skipping duplicate article with URL: %s\n", value.URL)
+			continue // Skip this article if it's a duplicate
+		}
+		if err != mongo.ErrNoDocuments {
+			return nil, fmt.Errorf("failed to check for existing article '%s': %w", value.Title, err)
+		}
+
 		// Calculate vector embedding for each article
-		articleText := value.Title + " " + value.Description // Combine title and description for embedding
+		articleText := value.Title + " " + value.Description
 		embedding, err := GetEmbeddingsfromText(articleText)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get embedding for article '%s': %w", value.Title, err)
@@ -154,39 +177,38 @@ func AddNewsEntryList(req []*dto.AddNewsRequest) ([]models.Article, error) {
 		}
 
 		article := models.Article{
-			ID:              primitive.NewObjectID(), // Generate a new ObjectID
+			ID:              primitive.NewObjectID(),
 			Title:           value.Title,
 			Description:     value.Description,
 			URL:             value.URL,
-			PublicationDate: parseTime(value.PublicationDate), // Assuming a helper function or direct parsing
+			PublicationDate: parseTime(value.PublicationDate),
 			SourceName:      value.SourceName,
 			Category:        value.Category,
 			RelevanceScore:  value.RelevanceScore,
 			Location: models.Location{
 				Type:        "Point",
-				Coordinates: []float64{value.Longitude, value.Latitude}, // GeoJSON expects [lon, lat]
+				Coordinates: []float64{value.Longitude, value.Latitude},
 			},
-			LLMSummary:      llmSummary, // Use the calculated LLM summary
-			VectorEmbedding: embedding,  // Use the calculated embedding
+			LLMSummary:      llmSummary,
+			VectorEmbedding: embedding,
 		}
 
-		_articlesAdded = append(_articlesAdded, article)
-	}
-
-	// Convert []models.Article to []interface{} for InsertMany
-	var articlesToInsert []interface{}
-	for _, article := range _articlesAdded {
 		articlesToInsert = append(articlesToInsert, article)
+		articlesAdded = append(articlesAdded, article)
 	}
 
-	_, err := collection.InsertMany(ctx, articlesToInsert)
-	if err != nil {
-		fmt.Printf("Failed to insert articles: %v\n", err)
-		return nil, err
+	if len(articlesToInsert) > 0 {
+		_, err := collection.InsertMany(ctx, articlesToInsert)
+		if err != nil {
+			fmt.Printf("Failed to insert articles: %v\n", err)
+			return nil, err
+		}
+		fmt.Println("Articles added successfully!")
+	} else {
+		fmt.Println("No new articles to add (all were duplicates or invalid).")
 	}
 
-	fmt.Println("Articles added successfully!")
-	return _articlesAdded, nil
+	return articlesAdded, nil
 }
 
 func FindNews(filter primitive.M, page, pageSize int64) ([]dto.NewsArticleResponse, error) {
@@ -302,4 +324,51 @@ func parseTime(dateStr string) time.Time {
 	}
 	fmt.Printf("Warning: Could not parse date string '%s' with known layouts. Returning zero time.\n", dateStr)
 	return time.Time{} // Return zero time if parsing fails
+}
+
+func GetAllCategories() ([]string, error) {
+	collection := database.GetCollection("news_articles")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use Distinct to get all unique categories
+	categories, err := collection.Distinct(ctx, "category", bson.D{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct categories: %w", err)
+	}
+
+	var result []string
+	for _, category := range categories {
+		if catStr, ok := category.(string); ok {
+			result = append(result, catStr)
+		} else if catArr, ok := category.(primitive.A); ok {
+			// Handle cases where category might be an array of strings
+			for _, item := range catArr {
+				if itemStr, ok := item.(string); ok {
+					result = append(result, itemStr)
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func GetAllSourceNames() ([]string, error) {
+	collection := database.GetCollection("news_articles")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Use Distinct to get all unique source names
+	sourceNames, err := collection.Distinct(ctx, "source_name", bson.D{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct source names: %w", err)
+	}
+
+	var result []string
+	for _, sourceName := range sourceNames {
+		if snStr, ok := sourceName.(string); ok {
+			result = append(result, snStr)
+		}
+	}
+	return result, nil
 }

@@ -4,9 +4,11 @@ import (
 	"log"
 	"news-api/internal/database"
 	"news-api/internal/routes"
+	"news-api/internal/services" // Import services package
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/robfig/cron/v3" // Import cron package
 )
 
 func main() {
@@ -18,6 +20,16 @@ func main() {
 	r := gin.Default()
 
 	database.Connect()
+	database.InitRedis() // Initialize Redis client
+
+	// Initialize and start cron scheduler
+	c := cron.New()
+	// Schedule the global trending calculations to run every hour
+	c.AddFunc("@every 1m", func() {
+		log.Println("Running scheduled global trending calculations...")
+		services.ScheduleGlobalTrendingCalculations()
+	})
+	c.Start()
 
 	// Setup all routes
 	routes.SetupRoutes(r)
